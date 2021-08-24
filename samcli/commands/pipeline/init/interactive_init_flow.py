@@ -2,10 +2,8 @@
 Interactive flow that prompts that users for pipeline template (cookiecutter template) and used it to generate
 pipeline configuration file
 """
-import json
 import logging
 import os
-from json import JSONDecodeError
 from pathlib import Path
 from textwrap import dedent
 from typing import Dict, List, Tuple
@@ -13,10 +11,7 @@ from typing import Dict, List, Tuple
 import click
 
 from samcli.cli.main import global_cfg
-from samcli.commands.exceptions import (
-    AppPipelineTemplateMetadataException,
-    PipelineTemplateCloneException,
-)
+from samcli.commands.exceptions import PipelineTemplateCloneException, PipelineFileAlreadyExistsError
 from samcli.lib.config.samconfig import SamConfig
 from samcli.lib.cookiecutter.interactive_flow import InteractiveFlow
 from samcli.lib.cookiecutter.interactive_flow_creator import InteractiveFlowCreator
@@ -57,10 +52,10 @@ class InteractiveInitFlow:
             dedent(
                 """\
 
-                sam pipeline init generates a pipeline configuration file that your CI/CD system
-                can use to deploy serverless applications using AWS SAM.
-                We will guide you through the process to bootstrap resources for each stage,
-                then walk through the details necessary for creating the pipeline config file.
+                sam pipeline init generates a pipeline config file that you can use to connect your
+                AWS account(s) to your CI/CD system. We will guide you through the process to
+                bootstrap resources for each stage, then walk through the details necessary for
+                creating the pipeline config file.
 
                 Please ensure you are in the root folder of your SAM application before you begin.
                 """
@@ -89,7 +84,7 @@ class InteractiveInitFlow:
         """
         Prompts the user to choose a pipeline template from SAM predefined set of pipeline templates hosted in the git
         repository: aws/aws-sam-cli-pipeline-init-templates.git
-        downloads locally, then generates the pipeline configuration file from the selected pipeline template.
+        downloads locally, then generates the pipeline config file from the selected pipeline template.
         Finally, return the list of generated files.
         """
         pipeline_templates_local_dir: Path = _clone_app_pipeline_templates()
@@ -123,17 +118,17 @@ class InteractiveInitFlow:
             )
             return self._generate_from_pipeline_template(pipeline_template_local_dir)
 
-    def _prompt_run_bootstrap_within_pipeline_init(self, stage_names: List[str], number_of_stages: int) -> bool:
+    def _prompt_run_bootstrap_within_pipeline_init(self, env_names: List[str], required_env_number: int) -> bool:
         """
         Prompt bootstrap if `--bootstrap` flag is provided. Return True if bootstrap process is executed.
         """
-        if not stage_names:
-            click.echo("[!] None detected in this account.")
+        if not env_names:
+            click.echo(Colored().yellow("No bootstrapped resources were detected."))
         else:
             click.echo(
                 Colored().yellow(
-                    f"Only {len(stage_names)} stage(s) were detected, "
-                    f"fewer than what the template requires: {number_of_stages}."
+                    f"Only {len(env_names)} bootstrapped stage(s) were detected, "
+                    f"fewer than what the template requires: {required_env_number}."
                 )
             )
         click.echo()
@@ -149,7 +144,7 @@ class InteractiveInitFlow:
 
                         For each stage, we will ask for [1] stage definition, [2] account details, and [3]
                         reference application build resources in order to bootstrap these pipeline
-                        resources.
+                        resources. You can also add optional security parameters.
 
                         We recommend using an individual AWS account profiles for each stage in your
                         pipeline. You can set these profiles up using [little bit of info on how to do
@@ -158,12 +153,12 @@ class InteractiveInitFlow:
                     )
                 )
 
-                click.echo(Colored().bold(f"\nStage {len(stage_names) + 1} Setup\n"))
+                click.echo(Colored().bold(f"\nStage {len(env_names) + 1} Setup\n"))
                 do_bootstrap(
                     region=None,
                     profile=None,
                     interactive=True,
-                    stage_name=None,
+                    environment_name=None,
                     pipeline_user_arn=None,
                     pipeline_execution_role_arn=None,
                     cloudformation_execution_role_arn=None,
@@ -178,16 +173,15 @@ class InteractiveInitFlow:
                 return True
         else:
             click.echo(
-                dedent(
-                    """\
-                    To set up stage(s), please quit the process using Ctrl+C and use one of the following commands:
-                    sam pipeline init --bootstrap       To be guided through the stage and config file creation process.
-                    sam pipeline bootstrap              To specify details for an individual stage.
-                    """
+                Colored().yellow(
+                    dedent(
+                        f"""\
+                        If you want to setup stages before proceed, please quit the process using Ctrl+C.
+                        Then you can either run {Colored().bold('sam pipeline bootstrap')} to setup a stage
+                        or re-run this command with option {Colored().bold('--bootstrap')} to enable stage setup.
+                        """
+                    )
                 )
-            )
-            click.prompt(
-                "To reference stage resources bootstrapped in a different account, press enter to proceed", default=""
             )
         return False
 
@@ -197,17 +191,14 @@ class InteractiveInitFlow:
         and return the list of generated files.
         """
         pipeline_template: Template = _initialize_pipeline_template(pipeline_template_dir)
-        number_of_stages = (pipeline_template.metadata or {}).get("number_of_stages")
-        if not number_of_stages:
-            LOG.debug("Cannot find number_of_stages from template's metadata, set to default 2.")
-            number_of_stages = 2
-        click.echo(f"You are using the {number_of_stages}-stage pipeline template.")
-        _draw_stage_diagram(number_of_stages)
+        required_env_number = 2  # TODO: read from template
+        click.echo(f"You are using the {required_env_number}-stage pipeline template.")
+        _draw_stage_diagram(required_env_number)
         while True:
-            click.echo("Checking for existing stages...\n")
-            stage_names, bootstrap_context = _load_pipeline_bootstrap_resources()
-            if len(stage_names) < number_of_stages and self._prompt_run_bootstrap_within_pipeline_init(
-                stage_names, number_of_stages
+            click.echo("Checking for bootstrapped resources...")
+            env_names, bootstrap_context = _load_pipeline_bootstrap_resources()
+            if len(env_names) < required_env_number and self._prompt_run_bootstrap_within_pipeline_init(
+                env_names, required_env_number
             ):
                 # the customers just went through the bootstrap process,
                 # refresh the pipeline bootstrap resources and see whether bootstrap is still needed
@@ -219,7 +210,7 @@ class InteractiveInitFlow:
             LOG.debug("Generating pipeline files into %s", generate_dir)
             context["outputDir"] = "."  # prevent cookiecutter from generating a sub-folder
             pipeline_template.generate_project(context, generate_dir)
-            return _copy_dir_contents_to_cwd(generate_dir)
+            return _copy_dir_contents_to_cwd_fail_on_exist(generate_dir)
 
 
 def _load_pipeline_bootstrap_resources() -> Tuple[List[str], Dict[str, str]]:
@@ -228,60 +219,41 @@ def _load_pipeline_bootstrap_resources() -> Tuple[List[str], Dict[str, str]]:
 
     config = SamConfig(PIPELINE_CONFIG_DIR, PIPELINE_CONFIG_FILENAME)
     if not config.exists():
-        context[str(["stage_names_message"])] = ""
+        context[str(["environment_names_message"])] = ""
         return [], context
 
-    # config.get_stage_names() will return the list of
-    # bootstrapped stage names and "default" which is used to store shared values
+    # config.get_env_names() will return the list of
+    # bootstrapped env names and "default" which is used to store shared values
     # we don't want to include "default" here.
-    stage_names = [stage_name for stage_name in config.get_stage_names() if stage_name != "default"]
-    for index, stage in enumerate(stage_names):
-        for key, value in config.get_all(_get_bootstrap_command_names(), section, stage).items():
-            context[str([stage, key])] = value
-            # create an index alias for each stage name
-            # so that if customers type "1," it is equivalent to the first stage name
-            context[str([str(index + 1), key])] = value
+    env_names = [env_name for env_name in config.get_env_names() if env_name != "default"]
+    for env in env_names:
+        for key, value in config.get_all(_get_bootstrap_command_names(), section, env).items():
+            context[str([env, key])] = value
 
-    # pre-load the list of stage names detected from pipelineconfig.toml
-    stage_names_message = (
-        "Here are the stage names detected "
+    # pre-load the list of env names detected from pipelineconfig.toml
+    environment_names_message = (
+        "Here are the environment names detected "
         + f"in {os.path.join(PIPELINE_CONFIG_DIR, PIPELINE_CONFIG_FILENAME)}:\n"
-        + "\n".join([f"\t{index + 1} - {stage_name}" for index, stage_name in enumerate(stage_names)])
+        + "\n".join([f"\t- {env_name}" for env_name in env_names])
     )
-    context[str(["stage_names_message"])] = stage_names_message
+    context[str(["environment_names_message"])] = environment_names_message
 
-    return stage_names, context
+    return env_names, context
 
 
-def _copy_dir_contents_to_cwd(source_dir: str) -> List[str]:
-    """
-    Copy the contents of source_dir into the current cwd.
-    If existing files are encountered, ask for confirmation.
-    If not confirmed, all files will be written to
-    .aws-sam/pipeline/generated-files/
-    """
-    file_paths: List[str] = []
-    existing_file_paths: List[str] = []
+def _copy_dir_contents_to_cwd_fail_on_exist(source_dir: str) -> List[str]:
+    copied_file_paths: List[str] = []
     for root, _, files in os.walk(source_dir):
         for filename in files:
             file_path = Path(root, filename)
             target_file_path = Path(".").joinpath(file_path.relative_to(source_dir))
             LOG.debug("Verify %s does not exist", target_file_path)
             if target_file_path.exists():
-                existing_file_paths.append(str(target_file_path))
-            file_paths.append(str(target_file_path))
-    if existing_file_paths:
-        click.echo("\nThe following files already exist:")
-        for existing_file_path in existing_file_paths:
-            click.echo(f"\t- {existing_file_path}")
-        if not click.confirm("Do you want to override them?"):
-            target_dir = str(Path(PIPELINE_CONFIG_DIR, "generated-files"))
-            osutils.copytree(source_dir, target_dir)
-            click.echo(f"All files are saved to {target_dir}.")
-            return [str(Path(target_dir, path)) for path in file_paths]
+                raise PipelineFileAlreadyExistsError(target_file_path)
+            copied_file_paths.append(str(target_file_path))
     LOG.debug("Copy contents of %s to cwd", source_dir)
     osutils.copytree(source_dir, ".")
-    return file_paths
+    return copied_file_paths
 
 
 def _clone_app_pipeline_templates() -> Path:
@@ -423,26 +395,7 @@ def _initialize_pipeline_template(pipeline_template_dir: Path) -> Template:
         The initialized pipeline's cookiecutter template
     """
     interactive_flow = _get_pipeline_template_interactive_flow(pipeline_template_dir)
-    metadata = _get_pipeline_template_metadata(pipeline_template_dir)
-    return Template(location=str(pipeline_template_dir), interactive_flows=[interactive_flow], metadata=metadata)
-
-
-def _get_pipeline_template_metadata(pipeline_template_dir: Path) -> Dict:
-    """
-    Load the metadata from the file metadata.json located in the template directory,
-    raise an exception if anything wrong.
-    """
-    metadata_path = Path(pipeline_template_dir, "metadata.json")
-    if not metadata_path.exists():
-        raise AppPipelineTemplateMetadataException(f"Cannot find metadata file {metadata_path}")
-    try:
-        with open(metadata_path, "r", encoding="utf-8") as file:
-            metadata = json.load(file)
-            if isinstance(metadata, dict):
-                return metadata
-            raise AppPipelineTemplateMetadataException(f"Invalid content found in {metadata_path}")
-    except JSONDecodeError as ex:
-        raise AppPipelineTemplateMetadataException(f"Invalid JSON found in {metadata_path}") from ex
+    return Template(location=str(pipeline_template_dir), interactive_flows=[interactive_flow])
 
 
 def _get_pipeline_template_interactive_flow(pipeline_template_dir: Path) -> InteractiveFlow:
@@ -479,4 +432,3 @@ def _draw_stage_diagram(number_of_stages: int) -> None:
     stage_lines = [_lines_for_stage(i + 1) for i in range(number_of_stages)]
     for i, delimiter in enumerate(delimiters):
         click.echo(delimiter.join([stage_lines[stage_i][i] for stage_i in range(number_of_stages)]))
-    click.echo("")

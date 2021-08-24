@@ -5,7 +5,7 @@ from parameterized import parameterized
 
 from samcli.commands.pipeline.bootstrap.guided_context import GuidedContext
 
-ANY_STAGE_NAME = "ANY_STAGE_NAME"
+ANY_ENVIRONMENT_NAME = "ANY_ENVIRONMENT_NAME"
 ANY_PIPELINE_USER_ARN = "ANY_PIPELINE_USER_ARN"
 ANY_PIPELINE_EXECUTION_ROLE_ARN = "ANY_PIPELINE_EXECUTION_ROLE_ARN"
 ANY_CLOUDFORMATION_EXECUTION_ROLE_ARN = "ANY_CLOUDFORMATION_EXECUTION_ROLE_ARN"
@@ -26,7 +26,7 @@ class TestGuidedContext(TestCase):
         click_mock.confirm.return_value = False
         click_mock.prompt = Mock(return_value="0")
         gc: GuidedContext = GuidedContext(
-            stage_name=ANY_STAGE_NAME,
+            environment_name=ANY_ENVIRONMENT_NAME,
             pipeline_user_arn=ANY_PIPELINE_USER_ARN,
             pipeline_execution_role_arn=ANY_PIPELINE_EXECUTION_ROLE_ARN,
             cloudformation_execution_role_arn=ANY_CLOUDFORMATION_EXECUTION_ROLE_ARN,
@@ -75,7 +75,7 @@ class TestGuidedContext(TestCase):
         # 2 - Yes, I need a help creating one
         # 3 - I already have an ECR image repository
         gc_without_ecr_info: GuidedContext = GuidedContext(
-            stage_name=ANY_STAGE_NAME,
+            environment_name=ANY_ENVIRONMENT_NAME,
             pipeline_user_arn=ANY_PIPELINE_USER_ARN,
             pipeline_execution_role_arn=ANY_PIPELINE_EXECUTION_ROLE_ARN,
             cloudformation_execution_role_arn=ANY_CLOUDFORMATION_EXECUTION_ROLE_ARN,
@@ -131,14 +131,14 @@ class TestGuidedContext_prompt_account_id(TestCase):
     ):
         getenv_mock.return_value = "not None"
         list_available_profiles_mock.return_value = ["profile1", "profile2"]
-        click_mock.prompt.return_value = "1"  # select environment variable
+        click_mock.prompt.return_value = "e"  # select environment variable
         get_current_account_id_mock.return_value = "account_id"
 
         guided_context_mock = Mock()
         GuidedContext._prompt_account_id(guided_context_mock)
 
         click_mock.prompt.assert_called_once_with(
-            ANY, show_choices=False, show_default=False, type=click_mock.Choice(["1", "2", "3", "q"])
+            ANY, show_choices=False, show_default=False, type=click_mock.Choice(["1", "2", "q", "e"])
         )
 
     @patch("samcli.commands.pipeline.bootstrap.guided_context.get_current_account_id")
@@ -150,14 +150,14 @@ class TestGuidedContext_prompt_account_id(TestCase):
     ):
         getenv_mock.return_value = None
         list_available_profiles_mock.return_value = ["profile1", "profile2"]
-        click_mock.prompt.return_value = "1"  # select environment variable
+        click_mock.prompt.return_value = "e"  # select environment variable
         get_current_account_id_mock.return_value = "account_id"
 
         guided_context_mock = Mock()
         GuidedContext._prompt_account_id(guided_context_mock)
 
         click_mock.prompt.assert_called_once_with(
-            ANY, show_choices=False, show_default=False, type=click_mock.Choice(["2", "3", "q"])
+            ANY, show_choices=False, show_default=False, type=click_mock.Choice(["1", "2", "q"])
         )
 
     @patch("samcli.commands.pipeline.bootstrap.guided_context.get_current_account_id")
@@ -169,7 +169,7 @@ class TestGuidedContext_prompt_account_id(TestCase):
     ):
         getenv_mock.return_value = "not None"
         list_available_profiles_mock.return_value = ["profile1", "profile2"]
-        click_mock.prompt.return_value = "1"  # select environment variable
+        click_mock.prompt.return_value = "e"  # select environment variable
         get_current_account_id_mock.return_value = "account_id"
 
         guided_context_mock = Mock()
@@ -180,11 +180,11 @@ class TestGuidedContext_prompt_account_id(TestCase):
     @parameterized.expand(
         [
             (
-                "2",
+                "1",
                 "profile1",
             ),
             (
-                "3",
+                "2",
                 "profile2",
             ),
         ]

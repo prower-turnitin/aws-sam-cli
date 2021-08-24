@@ -23,7 +23,7 @@ class GuidedContext:
     def __init__(
         self,
         profile: Optional[str] = None,
-        stage_name: Optional[str] = None,
+        environment_name: Optional[str] = None,
         pipeline_user_arn: Optional[str] = None,
         pipeline_execution_role_arn: Optional[str] = None,
         cloudformation_execution_role_arn: Optional[str] = None,
@@ -33,7 +33,7 @@ class GuidedContext:
         region: Optional[str] = None,
     ) -> None:
         self.profile = profile
-        self.stage_name = stage_name
+        self.environment_name = environment_name
         self.pipeline_user_arn = pipeline_user_arn
         self.pipeline_execution_role_arn = pipeline_execution_role_arn
         self.cloudformation_execution_role_arn = cloudformation_execution_role_arn
@@ -54,40 +54,40 @@ class GuidedContext:
                 """
             )
         )
-        has_env_creds = os.getenv(EnvProvider.ACCESS_KEY) and os.getenv(EnvProvider.SECRET_KEY)
-        click.echo(f"\t1 - Environment variables{' (not available)' if not has_env_creds else ''}")
+        if os.getenv(EnvProvider.ACCESS_KEY) and os.getenv(EnvProvider.SECRET_KEY):
+            click.echo(f"  e. Environment variables: {EnvProvider.ACCESS_KEY} and {EnvProvider.SECRET_KEY}")
         for i, profile in enumerate(profiles):
-            click.echo(f"\t{i + 2} - {profile} (named profile)")
-        click.echo("\tq - Quit and configure AWS credentials")
+            click.echo(f"  {i + 1}. {profile} (named profile)")
+        click.echo("  q. Quit and configure AWS credential myself")
         answer = click.prompt(
-            "Select a credential source to associate with this stage",
+            "Select an account source to associate with this stage",
             show_choices=False,
             show_default=False,
-            type=click.Choice((["1"] if has_env_creds else []) + [str(i + 2) for i in range(len(profiles))] + ["q"]),
+            type=click.Choice([str(i + 1) for i in range(len(profiles))] + ["q", "e"]),
         )
         if answer == "q":
             sys.exit(0)
-        elif answer == "1":
+        elif answer == "e":
             # by default, env variable has higher precedence
             # https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-envvars.html#envvars-list
             self.profile = None
         else:
-            self.profile = profiles[int(answer) - 2]
+            self.profile = profiles[int(answer) - 1]
 
         try:
             account_id = get_current_account_id(self.profile)
-            click.echo(self.color.green(f"Associated account {account_id} with stage {self.stage_name}."))
+            click.echo(self.color.green(f"Associated account {account_id} with stage {self.environment_name}."))
         except CredentialsError as ex:
-            click.echo(f"{self.color.red(ex.message)}\n")
+            click.echo(self.color.red(ex.message))
             self._prompt_account_id()
 
     def _prompt_stage_name(self) -> None:
         click.echo(
             "Enter a name for this stage. This will be referenced later when you use the sam pipeline init command:"
         )
-        self.stage_name = click.prompt(
+        self.environment_name = click.prompt(
             "Stage name",
-            default=self.stage_name,
+            default=self.environment_name,
             type=click.STRING,
         )
 
@@ -144,7 +144,7 @@ class GuidedContext:
     def _get_user_inputs(self) -> List[Tuple[str, Callable[[], None]]]:
         return [
             (f"Account: {get_current_account_id(self.profile)}", self._prompt_account_id),
-            (f"Stage name: {self.stage_name}", self._prompt_stage_name),
+            (f"Stage name: {self.environment_name}", self._prompt_stage_name),
             (f"Region: {self.region}", self._prompt_region_name),
             (
                 f"Pipeline user ARN: {self.pipeline_user_arn}"
@@ -185,8 +185,8 @@ class GuidedContext:
         and it will be created by the bootstrap command
         """
         click.secho(self.color.bold("[1] Stage definition"))
-        if self.stage_name:
-            click.echo(f"Stage name: {self.stage_name}")
+        if self.environment_name:
+            click.echo(f"Stage name: {self.environment_name}")
         else:
             self._prompt_stage_name()
         click.echo()
@@ -210,16 +210,19 @@ class GuidedContext:
             click.echo(f"Pipeline execution role ARN: {self.pipeline_execution_role_arn}")
         else:
             self._prompt_pipeline_execution_role()
+        click.echo()
 
         if self.cloudformation_execution_role_arn:
             click.echo(f"CloudFormation execution role ARN: {self.cloudformation_execution_role_arn}")
         else:
             self._prompt_cloudformation_execution_role()
+        click.echo()
 
         if self.artifacts_bucket_arn:
             click.echo(f"Artifacts bucket ARN: {self.cloudformation_execution_role_arn}")
         else:
             self._prompt_artifacts_bucket()
+        click.echo()
 
         if self.image_repository_arn:
             click.echo(f"ECR image repository ARN: {self.image_repository_arn}")
@@ -228,12 +231,12 @@ class GuidedContext:
         click.echo()
 
         # Ask customers to confirm the inputs
-        click.secho(self.color.bold("[4] Summary"))
+        click.secho(self.color.bold("[5] Summary"))
         while True:
             inputs = self._get_user_inputs()
             click.secho("Below is the summary of the answers:")
             for i, (text, _) in enumerate(inputs):
-                click.secho(f"\t{i + 1} - {text}")
+                click.secho(f"  {i + 1}. {text}")
             edit_input = click.prompt(
                 text="Press enter to confirm the values above, or select an item to edit the value",
                 default="0",
@@ -241,7 +244,6 @@ class GuidedContext:
                 show_default=False,
                 type=click.Choice(["0"] + [str(i + 1) for i in range(len(inputs))]),
             )
-            click.echo()
             if int(edit_input):
                 inputs[int(edit_input) - 1][1]()
                 click.echo()

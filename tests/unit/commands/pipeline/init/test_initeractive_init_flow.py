@@ -1,14 +1,10 @@
-import json
-import shutil
-import tempfile
 from unittest import TestCase
-from unittest.mock import patch, Mock, call
+from unittest.mock import patch, Mock, ANY, call
 import os
 from pathlib import Path
 
 from parameterized import parameterized
 
-from samcli.commands.exceptions import AppPipelineTemplateMetadataException
 from samcli.commands.pipeline.init.interactive_init_flow import (
     InteractiveInitFlow,
     PipelineTemplateCloneException,
@@ -17,8 +13,6 @@ from samcli.commands.pipeline.init.interactive_init_flow import (
     CUSTOM_PIPELINE_TEMPLATE_REPO_LOCAL_NAME,
     _prompt_cicd_provider,
     _prompt_provider_pipeline_template,
-    _get_pipeline_template_metadata,
-    _copy_dir_contents_to_cwd,
 )
 from samcli.commands.pipeline.init.pipeline_templates_manifest import AppPipelineTemplateManifestException
 from samcli.lib.utils.git_repo import CloneRepoException
@@ -116,14 +110,12 @@ class TestInteractiveInitFlow(TestCase):
     @patch("samcli.commands.pipeline.init.interactive_init_flow.InteractiveFlowCreator.create_flow")
     @patch("samcli.commands.pipeline.init.interactive_init_flow.PipelineTemplatesManifest")
     @patch("samcli.commands.pipeline.init.interactive_init_flow.GitRepo.clone")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._get_pipeline_template_metadata")
+    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd_fail_on_exist")
     @patch("samcli.lib.cookiecutter.question.click")
     def test_generate_pipeline_configuration_file_from_app_pipeline_template_happy_case(
         self,
         click_mock,
-        _get_pipeline_template_metadata_mock,
-        _copy_dir_contents_to_cwd_mock,
+        _copy_dir_contents_to_cwd_fail_on_exist_mock,
         clone_mock,
         PipelineTemplatesManifest_mock,
         create_interactive_flow_mock,
@@ -157,8 +149,8 @@ class TestInteractiveInitFlow(TestCase):
         config_file = Mock()
         samconfig_mock.return_value = config_file
         config_file.exists.return_value = True
-        config_file.get_stage_names.return_value = ["testing", "prod"]
-        config_file.get_stage_names.return_value = ["testing", "prod"]
+        config_file.get_env_names.return_value = ["testing", "prod"]
+        config_file.get_env_names.return_value = ["testing", "prod"]
         config_file.get_all.return_value = {"pipeline_execution_role": "arn:aws:iam::123456789012:role/execution-role"}
 
         click_mock.prompt.side_effect = [
@@ -166,7 +158,6 @@ class TestInteractiveInitFlow(TestCase):
             "2",  # choose "Jenkins" when prompt for CI/CD system. (See pipeline_templates_manifest_mock, Jenkins is the 2nd provider)
             "1",  # choose "Jenkins pipeline template" when prompt for pipeline template
         ]
-        _get_pipeline_template_metadata_mock.return_value = {"number_of_stages": 2}
 
         # trigger
         InteractiveInitFlow(allow_bootstrap=False).do_interactive()
@@ -182,11 +173,9 @@ class TestInteractiveInitFlow(TestCase):
         interactive_flow_mock.run.assert_called_once_with(
             {
                 str(["testing", "pipeline_execution_role"]): "arn:aws:iam::123456789012:role/execution-role",
-                str(["1", "pipeline_execution_role"]): "arn:aws:iam::123456789012:role/execution-role",
                 str(["prod", "pipeline_execution_role"]): "arn:aws:iam::123456789012:role/execution-role",
-                str(["2", "pipeline_execution_role"]): "arn:aws:iam::123456789012:role/execution-role",
-                str(["stage_names_message"]): "Here are the stage names detected "
-                f'in {os.path.join(".aws-sam", "pipeline", "pipelineconfig.toml")}:\n\t1 - testing\n\t2 - prod',
+                str(["environment_names_message"]): "Here are the environment names detected "
+                f'in {os.path.join(".aws-sam", "pipeline", "pipelineconfig.toml")}:\n\t- testing\n\t- prod',
             }
         )
         cookiecutter_mock.assert_called_once_with(
@@ -262,14 +251,12 @@ class TestInteractiveInitFlow(TestCase):
     @patch("samcli.commands.pipeline.init.interactive_init_flow.InteractiveFlowCreator.create_flow")
     @patch("samcli.commands.pipeline.init.interactive_init_flow.GitRepo.clone")
     @patch("samcli.commands.pipeline.init.interactive_init_flow.click")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._get_pipeline_template_metadata")
+    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd_fail_on_exist")
     @patch("samcli.lib.cookiecutter.question.click")
     def test_generate_pipeline_configuration_file_from_custom_remote_pipeline_template_happy_case(
         self,
         questions_click_mock,
-        _get_pipeline_template_metadata_mock,
-        _copy_dir_contents_to_cwd_mock,
+        _copy_dir_contents_to_cwd_fail_on_exist_mock,
         init_click_mock,
         clone_mock,
         create_interactive_flow_mock,
@@ -287,11 +274,10 @@ class TestInteractiveInitFlow(TestCase):
         create_interactive_flow_mock.return_value = interactive_flow_mock
         cookiecutter_context_mock = {"key": "value"}
         interactive_flow_mock.run.return_value = cookiecutter_context_mock
-        _copy_dir_contents_to_cwd_mock.return_value = ["file1"]
+        _copy_dir_contents_to_cwd_fail_on_exist_mock.return_value = ["file1"]
 
         questions_click_mock.prompt.return_value = "2"  # Custom pipeline templates
         init_click_mock.prompt.return_value = "https://github.com/any-custom-pipeline-template-repo.git"
-        _get_pipeline_template_metadata_mock.return_value = {"number_of_stages": 2}
 
         # trigger
         InteractiveInitFlow(allow_bootstrap=False).do_interactive()
@@ -348,31 +334,6 @@ class TestInteractiveInitFlow(TestCase):
         click_mock.prompt.assert_called_once()
         self.assertEqual(chosen_template, template2)
 
-    def test_get_pipeline_template_metadata_can_load(self):
-        with tempfile.TemporaryDirectory() as dir:
-            metadata = {"number_of_stages": 2}
-            with open(Path(dir, "metadata.json"), "w") as f:
-                json.dump(metadata, f)
-            self.assertEquals(metadata, _get_pipeline_template_metadata(dir))
-
-    def test_get_pipeline_template_metadata_not_exist(self):
-        with tempfile.TemporaryDirectory() as dir:
-            with self.assertRaises(AppPipelineTemplateMetadataException):
-                _get_pipeline_template_metadata(dir)
-
-    @parameterized.expand(
-        [
-            ('["not_a_dict"]',),
-            ("not a json"),
-        ]
-    )
-    def test_get_pipeline_template_metadata_not_valid(self, metadata_str):
-        with tempfile.TemporaryDirectory() as dir:
-            with open(Path(dir, "metadata.json"), "w") as f:
-                f.write(metadata_str)
-            with self.assertRaises(AppPipelineTemplateMetadataException):
-                _get_pipeline_template_metadata(dir)
-
 
 class TestInteractiveInitFlowWithBootstrap(TestCase):
     @patch("samcli.commands.pipeline.init.interactive_init_flow.SamConfig")
@@ -384,14 +345,12 @@ class TestInteractiveInitFlowWithBootstrap(TestCase):
     )
     @patch("samcli.commands.pipeline.init.interactive_init_flow.PipelineTemplatesManifest")
     @patch("samcli.commands.pipeline.init.interactive_init_flow.GitRepo.clone")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._get_pipeline_template_metadata")
+    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd_fail_on_exist")
     @patch("samcli.lib.cookiecutter.question.click")
     def test_with_bootstrap_but_answer_no(
         self,
         click_mock,
-        _get_pipeline_template_metadata_mock,
-        _copy_dir_contents_to_cwd_mock,
+        _copy_dir_contents_to_cwd_fail_on_exist_mock,
         clone_mock,
         PipelineTemplatesManifest_mock,
         _prompt_run_bootstrap_within_pipeline_init_mock,
@@ -426,9 +385,8 @@ class TestInteractiveInitFlowWithBootstrap(TestCase):
         config_file = Mock()
         samconfig_mock.return_value = config_file
         config_file.exists.return_value = True
-        config_file.get_stage_names.return_value = ["testing"]
+        config_file.get_env_names.return_value = ["testing"]
         config_file.get_all.return_value = {"pipeline_execution_role": "arn:aws:iam::123456789012:role/execution-role"}
-        _get_pipeline_template_metadata_mock.return_value = {"number_of_stages": 2}
 
         click_mock.prompt.side_effect = [
             "1",  # App pipeline templates
@@ -460,16 +418,14 @@ class TestInteractiveInitFlowWithBootstrap(TestCase):
     )
     @patch("samcli.commands.pipeline.init.interactive_init_flow.PipelineTemplatesManifest")
     @patch("samcli.commands.pipeline.init.interactive_init_flow.GitRepo.clone")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd")
-    @patch("samcli.commands.pipeline.init.interactive_init_flow._get_pipeline_template_metadata")
+    @patch("samcli.commands.pipeline.init.interactive_init_flow._copy_dir_contents_to_cwd_fail_on_exist")
     @patch("samcli.lib.cookiecutter.question.click")
     def test_with_bootstrap_answer_yes(
         self,
-        get_stage_name_side_effects,
+        get_env_name_side_effects,
         _prompt_run_bootstrap_expected_calls,
         click_mock,
-        _get_pipeline_template_metadata_mock,
-        _copy_dir_contents_to_cwd_mock,
+        _copy_dir_contents_to_cwd_fail_on_exist_mock,
         clone_mock,
         PipelineTemplatesManifest_mock,
         _prompt_run_bootstrap_within_pipeline_init_mock,
@@ -504,9 +460,8 @@ class TestInteractiveInitFlowWithBootstrap(TestCase):
         config_file = Mock()
         samconfig_mock.return_value = config_file
         config_file.exists.return_value = True
-        config_file.get_stage_names.side_effect = get_stage_name_side_effects
+        config_file.get_env_names.side_effect = get_env_name_side_effects
         config_file.get_all.return_value = {"pipeline_execution_role": "arn:aws:iam::123456789012:role/execution-role"}
-        _get_pipeline_template_metadata_mock.return_value = {"number_of_stages": 2}
 
         click_mock.prompt.side_effect = [
             "1",  # App pipeline templates
@@ -522,45 +477,3 @@ class TestInteractiveInitFlowWithBootstrap(TestCase):
 
         # verify
         _prompt_run_bootstrap_within_pipeline_init_mock.assert_has_calls(_prompt_run_bootstrap_expected_calls)
-
-
-class TestInteractiveInitFlow_copy_dir_contents_to_cwd(TestCase):
-    def tearDown(self) -> None:
-        if Path("file").exists():
-            Path("file").unlink()
-        shutil.rmtree(os.path.join(".aws-sam", "pipeline"), ignore_errors=True)
-
-    @patch("samcli.commands.pipeline.init.interactive_init_flow.click.confirm")
-    def test_copy_dir_contents_to_cwd_no_need_override(self, confirm_mock):
-        with tempfile.TemporaryDirectory() as source:
-            confirm_mock.return_value = True
-            Path(source, "file").touch()
-            Path(source, "file").write_text("hi")
-            file_paths = _copy_dir_contents_to_cwd(source)
-            confirm_mock.assert_not_called()
-            self.assertEqual("hi", Path("file").read_text(encoding="utf-8"))
-            self.assertEqual([str(Path(".", "file"))], file_paths)
-
-    @patch("samcli.commands.pipeline.init.interactive_init_flow.click.confirm")
-    def test_copy_dir_contents_to_cwd_override(self, confirm_mock):
-        with tempfile.TemporaryDirectory() as source:
-            confirm_mock.return_value = True
-            Path(source, "file").touch()
-            Path(source, "file").write_text("hi")
-            Path("file").touch()
-            file_paths = _copy_dir_contents_to_cwd(source)
-            confirm_mock.assert_called_once()
-            self.assertEqual("hi", Path("file").read_text(encoding="utf-8"))
-            self.assertEqual([str(Path(".", "file"))], file_paths)
-
-    @patch("samcli.commands.pipeline.init.interactive_init_flow.click.confirm")
-    def test_copy_dir_contents_to_cwd_not_override(self, confirm_mock):
-        with tempfile.TemporaryDirectory() as source:
-            confirm_mock.return_value = False
-            Path(source, "file").touch()
-            Path(source, "file").write_text("hi")
-            Path("file").touch()
-            file_paths = _copy_dir_contents_to_cwd(source)
-            confirm_mock.assert_called_once()
-            self.assertEqual("", Path("file").read_text(encoding="utf-8"))
-            self.assertEqual([str(Path(".aws-sam", "pipeline", "generated-files", "file"))], file_paths)
